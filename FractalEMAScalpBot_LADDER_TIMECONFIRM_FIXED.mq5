@@ -28,6 +28,7 @@ input int      PreSecureBufferPips = 5;   // قبل الهدف التالي به
 input int      AfterTP3_StepPips   = 15;  // بعد TP3 نضيف هدف جديد كل 15 pip (قابل للتغيير)
 input int      AfterTP3_SLOffsetPips= 5;  // بعد TP3: نجعل SL قبل الهدف السابق بـ 5 pip
 input int      MaxLadderLevels     = 50;  // حد أقصى لمستويات السلم
+input bool     UseTPInLadder       = false; // عند false: لا نضع TP ثابت (سلم أرباح بدون إغلاق تلقائي)
 
 // --- Entry timing control (دخول لحظي + تأكيد زمني)
 input int      ConfirmMillis       = 300; // تأكيد زمني للاختراق داخل نفس الشمعة (ms)
@@ -181,6 +182,14 @@ string IntegerToHexString(int value, int width)
    return hex;
 }
 
+bool IsValidFractalValue(const double v)
+{
+   if(!MathIsValidNumber(v)) return false;
+   if(v==0.0) return false;
+   if(v==EMPTY_VALUE) return false;
+   return true;
+}
+
 // URL encode UTF-8
 string UrlEncodeUtf8(string s)
 {
@@ -264,7 +273,7 @@ void ParseCommand(const string raw_cmd)
    string text = StringToLower(original);
 
 
-   if(text=="start" || text=="panel")
+   if(text=="start" || text=="panel" || text=="panal")
    {
       SendTelegram("Commands:\nstart/panel = show panel\nstatus = report\nstop = disable trading\nrun = enable trading\nlot X\nmax N\nsymbol GOLD\ndiff X\nre N");
       return;
@@ -515,17 +524,23 @@ TradeType CheckSignal()
    {
       datetime fractalTime = iTime(gTradeSymbol, PERIOD_M1, 2);
 
-      if(bufLower[0]!=0.0 && (fractalTime!=lastFractalTimestamp || lastFractalType!=BUY))
+      if(IsValidFractalValue(bufLower[0]) && (fractalTime!=lastFractalTimestamp || lastFractalType!=BUY))
       {
          lastFractalTimestamp = fractalTime;
          lastFractalType = BUY;
          reentryCount = 0;
+         gLastZone = 0;
+         gPendingSide = NONE;
+         gPendingMs = 0;
       }
-      else if(bufUpper[0]!=0.0 && (fractalTime!=lastFractalTimestamp || lastFractalType!=SELL))
+      else if(IsValidFractalValue(bufUpper[0]) && (fractalTime!=lastFractalTimestamp || lastFractalType!=SELL))
       {
          lastFractalTimestamp = fractalTime;
          lastFractalType = SELL;
          reentryCount = 0;
+         gLastZone = 0;
+         gPendingSide = NONE;
+         gPendingMs = 0;
       }
    }
 
@@ -621,7 +636,7 @@ void PlaceOrder(const TradeType side)
    if(side==BUY)
    {
       double bufLower[1];
-      if(CopyBuffer(handleFractal,1,2,1,bufLower)>0 && bufLower[0]!=0.0)
+      if(CopyBuffer(handleFractal,1,2,1,bufLower)>0 && IsValidFractalValue(bufLower[0]))
          fractalVal = bufLower[0];
       else
          fractalVal = SymbolInfoDouble(gTradeSymbol, SYMBOL_BID);
@@ -634,7 +649,7 @@ void PlaceOrder(const TradeType side)
    else
    {
       double bufUpper[1];
-      if(CopyBuffer(handleFractal,0,2,1,bufUpper)>0 && bufUpper[0]!=0.0)
+      if(CopyBuffer(handleFractal,0,2,1,bufUpper)>0 && IsValidFractalValue(bufUpper[0]))
          fractalVal = bufUpper[0];
       else
          fractalVal = SymbolInfoDouble(gTradeSymbol, SYMBOL_ASK);
@@ -664,14 +679,14 @@ void PlaceOrder(const TradeType side)
       request.type  = ORDER_TYPE_BUY;
       request.price = price;
       request.sl    = NormalizeDouble(slPrice, digits);
-      request.tp    = NormalizeDouble(price + tp1Dist, digits);
+      request.tp    = UseTPInLadder ? NormalizeDouble(price + tp1Dist, digits) : 0.0;
    }
    else
    {
       request.type  = ORDER_TYPE_SELL;
       request.price = price;
       request.sl    = NormalizeDouble(slPrice, digits);
-      request.tp    = NormalizeDouble(price - tp1Dist, digits);
+      request.tp    = UseTPInLadder ? NormalizeDouble(price - tp1Dist, digits) : 0.0;
    }
 
    // نستخدم حد أدنى للمسافة + OrderCheck لضبط SL/TP عمليًا وتجنب Invalid stops
@@ -857,7 +872,7 @@ void ManagePositions()
          : (open - PipToPrice(gTradeSymbol, tgtPips));
 
       // تأكد أن TP الموجود على الصفقة يساوي هدف المستوى الحالي
-      if(tp==0.0 || MathAbs(tp - tgtPrice) > (SymPoint(gTradeSymbol)*2))
+      if(UseTPInLadder && (tp==0.0 || MathAbs(tp - tgtPrice) > (SymPoint(gTradeSymbol)*2)))
       {
          MqlTradeRequest req;
          MqlTradeResult  res;
@@ -893,7 +908,7 @@ void ManagePositions()
                req.position = ticket;
                req.magic    = MagicNumber;
                req.sl       = NormalizeDouble(secureSL, digits);
-               req.tp       = NormalizeDouble(tgtPrice, digits);
+               req.tp       = UseTPInLadder ? NormalizeDouble(tgtPrice, digits) : 0.0;
                OrderSend(req,res);
             }
          }
@@ -926,7 +941,7 @@ void ManagePositions()
             req.position = ticket;
             req.magic    = MagicNumber;
             req.sl       = NormalizeDouble(newSL, digits);
-            req.tp       = NormalizeDouble(nextTP, digits);
+            req.tp       = UseTPInLadder ? NormalizeDouble(nextTP, digits) : 0.0;
             OrderSend(req,res);
          }
       }
